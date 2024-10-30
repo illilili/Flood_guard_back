@@ -1,0 +1,21 @@
+# node_modules 폴더를 Git에서 제외
+node_modules/
+
+# 환경 설정 파일
+.env
+
+# 로그 파일
+logs/
+*.log
+
+# 운영체제별 설정 파일
+.DS_Store
+Thumbs.db
+
+# 빌드 결과물
+dist/
+build/
+
+# 기타 에디터 설정 파일
+.vscode/
+.idea/
