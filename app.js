@@ -1,10 +1,22 @@
 const express = require("express");
 const cors = require("cors"); // CORS 추가
 const { Pool } = require("pg");
-
+const webPush = require("web-push");
 const app = express();
 app.use(cors({ origin: "*" })); // 모든 도메인에 대해 허용
 app.use(express.json());
+
+const vapidKeys = {
+  publicKey:
+    "BOr1ZRzOF7UEGY4ylBTfjC6sCUBJuH71QVI_NB_OK3L4DfrHxI5pvbRVmRrcTm8W2s_V-nWxDyidcxEVlk_igwA",
+  privateKey: "sm1fHToM94BoQ24wrsHUFpRdM9Zb9yhS-ApsZ6W_i9w",
+};
+
+webPush.setVapidDetails(
+  "mailto:example@example.com",
+  vapidKeys.publicKey,
+  vapidKeys.privateKey
+);
 
 const pool = new Pool({
   user: "postgres",
@@ -16,6 +28,41 @@ const pool = new Pool({
 
 pool.on("error", (err, client) => {
   console.error("Unexpected database error:", err);
+});
+
+let subscriptions = [];
+
+// 구독 정보 저장
+app.post("/api/save-subscription", (req, res) => {
+  const subscription = req.body;
+
+  // 중복 방지
+  if (!subscriptions.find((sub) => sub.endpoint === subscription.endpoint)) {
+    subscriptions.push(subscription);
+    console.log("Subscription saved:", subscription);
+  }
+
+  res.status(201).json({ message: "Subscription saved successfully." });
+});
+
+// 테스트용 푸시 알림 전송 API
+app.post("/api/send-notification", (req, res) => {
+  const { title, body } = req.body;
+
+  subscriptions.forEach((subscription) => {
+    const payload = JSON.stringify({ title, body });
+
+    webPush
+      .sendNotification(subscription, payload)
+      .then(() => {
+        console.log("Notification sent to:", subscription.endpoint);
+      })
+      .catch((error) => {
+        console.error("Error sending notification:", error);
+      });
+  });
+
+  res.status(200).json({ message: "Notifications sent successfully." });
 });
 
 // 주차 위치 등록 API
@@ -47,7 +94,7 @@ app.post("/api/checkFloodHistory", async (req, res) => {
     // 침수 이력 확인
     const floodResult = await pool.query(
       `SELECT id FROM flood_history
-       WHERE ST_Contains(location, ST_SetSRID(ST_MakePoint($1, $2), 4326))`,
+       WHERE ST_Contains(location, ST_SetSRID(ST_MakePoint($1, $2), 3857))`, // EPSG:3857로 설정
       [lon, lat]
     );
 
