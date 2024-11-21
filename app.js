@@ -94,7 +94,10 @@ app.post("/api/checkFloodHistory", async (req, res) => {
     // 침수 이력 확인
     const floodResult = await pool.query(
       `SELECT id FROM flood_history
-       WHERE ST_Contains(location, ST_SetSRID(ST_MakePoint($1, $2), 3857))`, // EPSG:3857로 설정
+       WHERE ST_Contains(
+       location,
+       ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 3857)
+       )`, // EPSG:3857로 설정
       [lon, lat]
     );
 
@@ -153,6 +156,6 @@ app.post("/api/getFloodThresholds", async (req, res) => {
   }
 });
 
-app.listen(3000, () => {
-  console.log("Server running on http://localhost:3000");
+app.listen(3000, "0.0.0.0", () => {
+  console.log("Server running on http://0.0.0.0:3000");
 });
