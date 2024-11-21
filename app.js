@@ -19,11 +19,10 @@ webPush.setVapidDetails(
 );
 
 const pool = new Pool({
-  user: "postgres",
-  host: "localhost",
-  database: "flood_prevention",
-  password: "1114",
-  port: 5432,
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false, // Render에서 SSL을 사용하는 경우 필요
+  },
 });
 
 pool.on("error", (err, client) => {
