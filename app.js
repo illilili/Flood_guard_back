@@ -1,79 +1,116 @@
 const express = require("express");
-const cors = require("cors"); // CORS 추가
+const cors = require("cors");
 const { Pool } = require("pg");
-const webPush = require("web-push");
+const pushNotificationService = require("./push");
+const admin = require("firebase-admin");
+// 배포용
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+//const serviceAccount = require("./serviceAccountKey.json");
 const app = express();
 app.use(cors({ origin: "*" })); // 모든 도메인에 대해 허용
-app.use(express.json());
+app.use(express.json()); // JSON 형태의 요청을 처리
 
-const vapidKeys = {
-  publicKey:
-    "BOr1ZRzOF7UEGY4ylBTfjC6sCUBJuH71QVI_NB_OK3L4DfrHxI5pvbRVmRrcTm8W2s_V-nWxDyidcxEVlk_igwA",
-  privateKey: "sm1fHToM94BoQ24wrsHUFpRdM9Zb9yhS-ApsZ6W_i9w",
-};
+// Firebase Admin SDK 초기화
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
-webPush.setVapidDetails(
-  "mailto:example@example.com",
-  vapidKeys.publicKey,
-  vapidKeys.privateKey
-);
+// Firebase Cloud Messaging 사용
+const messaging = admin.messaging();
 
+// DB 연결 설정
+
+// 배포용
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
-    rejectUnauthorized: false, // Render에서 SSL을 사용하는 경우 필요
+    rejectUnauthorized: false,
   },
 });
 
-pool.on("error", (err, client) => {
-  console.error("Unexpected database error:", err);
-});
+// // 테스트용
+// const pool = new Pool({
+//   user: "postgres",
+//   host: "localhost",
+//   database: "flood_prevention",
+//   password: "1114",
+//   port: 5432,
+// });
 
-let subscriptions = [];
-
-// 구독 정보 저장
+// DB에 구독 정보 저장
 app.post("/api/save-subscription", (req, res) => {
   const subscription = req.body;
 
-  // 중복 방지
-  if (!subscriptions.find((sub) => sub.endpoint === subscription.endpoint)) {
-    subscriptions.push(subscription);
-    console.log("Subscription saved:", subscription);
-  }
+  // FCM 토큰을 DB에 저장하기
+  const { endpoint, keys } = subscription;
+  const { auth, p256dh } = keys;
 
-  res.status(201).json({ message: "Subscription saved successfully." });
+  // FCM의 토큰(endpoint)을 DB에 저장
+  pool.query(
+    "INSERT INTO subscriptions (endpoint, auth, p256dh) VALUES ($1, $2, $3) ON CONFLICT (endpoint) DO UPDATE SET auth = $2, p256dh = $3",
+    [endpoint, auth, p256dh], // 실제 값들을 전달
+    (err) => {
+      if (err) {
+        console.error("Error saving subscription to DB:", err);
+        return res.status(500).json({ error: "Error saving subscription." });
+      }
+      console.log("Subscription saved successfully.");
+      res.status(201).json({ message: "Subscription saved successfully." });
+    }
+  );
 });
 
-// 테스트용 푸시 알림 전송 API
+// 푸시 알림 전송 API
 app.post("/api/send-notification", (req, res) => {
   const { title, body } = req.body;
 
-  subscriptions.forEach((subscription) => {
-    const payload = JSON.stringify({ title, body });
+  // DB에서 구독 정보(FCM 토큰) 조회
+  pool.query("SELECT * FROM subscriptions", (err, result) => {
+    if (err) {
+      console.error("Error fetching subscriptions from DB:", err);
+      return res.status(500).json({ error: "Error fetching subscriptions." });
+    }
 
-    webPush
-      .sendNotification(subscription, payload)
+    const subscriptions = result.rows;
+
+    // FCM을 통해 알림 보내기
+    const messages = subscriptions.map((subscription) => {
+      const registrationToken = subscription.endpoint; // FCM 토큰을 endpoint로 사용
+
+      const payload = {
+        notification: {
+          title: title,
+          body: body,
+        },
+      };
+
+      return messaging
+        .sendToDevice(registrationToken, payload) // Firebase FCM 사용
+        .then(() => {
+          console.log("FCM Notification sent to:", registrationToken);
+        })
+        .catch((error) => {
+          console.error("Error sending FCM notification:", error);
+        });
+    });
+
+    // 모든 알림 전송 완료 후 응답
+    Promise.all(messages)
       .then(() => {
-        console.log("Notification sent to:", subscription.endpoint);
+        res.status(200).json({ message: "Notifications sent successfully." });
       })
       .catch((error) => {
-        console.error("Error sending notification:", error);
+        res.status(500).json({ error: "Error sending notifications." });
       });
   });
-
-  res.status(200).json({ message: "Notifications sent successfully." });
 });
 
 // 주차 위치 등록 API
 app.post("/api/registerParking", async (req, res) => {
-  console.log("Request body:", req.body); // 로그 추가
   const { userUUID, lat, lon } = req.body;
-
   if (!userUUID || typeof lat !== "number" || typeof lon !== "number") {
-    console.error("Invalid input data:", req.body); // 로그 추가
     return res.status(400).json({ error: "Invalid input data" });
   }
-
   res.status(200).json({
     success: true,
     message: "Parking location registered.",
@@ -84,22 +121,18 @@ app.post("/api/registerParking", async (req, res) => {
 // 침수 이력 확인 API
 app.post("/api/checkFloodHistory", async (req, res) => {
   const { lat, lon } = req.body;
-
   if (typeof lat !== "number" || typeof lon !== "number") {
     return res.status(400).json({ error: "Invalid coordinates." });
   }
-
   try {
-    // 침수 이력 확인
     const floodResult = await pool.query(
       `SELECT id FROM flood_history
        WHERE ST_Contains(
        location,
        ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 3857)
-       )`, // EPSG:3857로 설정
+       )`,
       [lon, lat]
     );
-
     res.status(200).json({ floodHistory: floodResult.rows.length > 0 });
   } catch (error) {
     console.error("Error checking flood history:", error);
@@ -110,36 +143,27 @@ app.post("/api/checkFloodHistory", async (req, res) => {
 // 침수 유발 강우량 정보 가져오기 API
 app.post("/api/getFloodThresholds", async (req, res) => {
   const { lat, lon } = req.body;
-
   if (typeof lat !== "number" || typeof lon !== "number") {
     return res.status(400).json({ error: "Invalid coordinates." });
   }
-
   try {
-    // 1단계: 범위 내 임계값 확인
     const rangeQuery = `
       SELECT depth_10, depth_20, depth_50
       FROM flood_rainfall_thresholds
       WHERE lat_min <= $1 AND lat_max >= $1
         AND lon_min <= $2 AND lon_max >= $2
-      LIMIT 1;
-    `;
+      LIMIT 1;`;
     let result = await pool.query(rangeQuery, [lat, lon]);
-
     if (result.rows.length > 0) {
       return res.status(200).json(result.rows[0]);
     }
-
-    // 2단계: 가장 가까운 데이터 조회
     const nearestQuery = `
       SELECT depth_10, depth_20, depth_50,
       SQRT(POW((lat_min + lat_max) / 2 - $1, 2) + POW((lon_min + lon_max) / 2 - $2, 2)) AS distance
       FROM flood_rainfall_thresholds
       ORDER BY distance
-      LIMIT 1;
-    `;
+      LIMIT 1;`;
     result = await pool.query(nearestQuery, [lat, lon]);
-
     if (result.rows.length > 0) {
       return res.status(200).json(result.rows[0]);
     } else {
@@ -155,6 +179,6 @@ app.post("/api/getFloodThresholds", async (req, res) => {
   }
 });
 
-app.listen(3000, "0.0.0.0", () => {
+app.listen(3000, () => {
   console.log("Server running on http://0.0.0.0:3000");
 });

@@ -19,3 +19,5 @@ build/
 # 기타 에디터 설정 파일
 .vscode/
 .idea/
+
+serviceAccountKey.json
